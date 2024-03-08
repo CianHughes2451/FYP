@@ -1,0 +1,464 @@
+---
+title: "FYP Team Data"
+author: "Cian Hughes"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggsoccer)
+
+```
+
+```{r}
+# Manually set colors for each type_name
+color_mapping <- c(
+  corner_crossed = "pink",
+  dribble = "yellow",
+  pass = "red",
+  shot = "darkblue",
+  corner_short = "orange",
+  goalkick = "black",
+  cross = "darkgreen",
+  freekick_crossed = "lightgreen",
+  take_on = "brown",
+  interception = "violet",
+  shot_freekick = "salmon"
+)
+```
+
+```{r}
+# Define the custom soccer pitch with scaled y-axis
+# Pitch in Metres is 105 x 68
+# Halfway = 52.5 on the x-axis
+pitch_custom <- list(
+  length = 105,
+  width = 68,
+  penalty_box_length = 16,
+  penalty_box_width = 43,
+  six_yard_box_length = 6,
+  six_yard_box_width = 18,
+  penalty_spot_distance = 10,
+  goal_width = 8,
+  origin_x = 0,
+  origin_y = 0
+)
+```
+
+```{r}
+# Define the coordinates for your custom boxes
+custom_zones <- list(
+  zone1 = list(x_min = 0, x_max = 30, y_min = 0, y_max = 68),
+  zone2 = list(x_min = 30, x_max = 52.5, y_min = 0, y_max = 68),
+  zone3 = list(x_min = 52.5, x_max = 75, y_min = 0, y_max = 68),
+  zone4 = list(x_min = 75, x_max = 105, y_min = 0, y_max = 68)
+)
+
+# Create a data frame from the custom boxes list
+custom_zones_df <- data.frame(
+  zone = names(custom_zones),
+  x = sapply(custom_zones, function(zone) mean(c(zone$x_min, zone$x_max))),
+  y = sapply(custom_zones, function(zone) mean(c(zone$y_min, zone$y_max))),
+  x_min = sapply(custom_zones, function(zone) zone$x_min),
+  x_max = sapply(custom_zones, function(zone) zone$x_max),
+  y_min = sapply(custom_zones, function(zone) zone$y_min),
+  y_max = sapply(custom_zones, function(zone) zone$y_max)
+)
+
+# Function to determine the box for each point
+find_zone <- function(x, y) {
+  zone_names <- sapply(seq_along(x), function(i) {
+    for (zone_name in names(custom_zones)) {
+      zone <- custom_zones[[zone_name]]
+      if (x[i] >= zone$x_min && x[i] <= zone$x_max && y[i] >= zone$y_min && y[i] <= zone$y_max) {
+        return(zone_name)
+      }
+    }
+    return(NA)
+  })
+  return(zone_names)
+}
+```
+
+```{r}
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_text(data = custom_zones_df, aes(x = x, y = y, label = zone), size = 4, color = "black") +
+  labs(title = "Zones on Pitch") +
+  theme_minimal()
+
+```
+# Now getting all sequences for any team_id
+
+```{r}
+# Read the "actions" CSV file
+actions <- read.csv("data/actions.csv") # Change path file if needed
+
+# Read the "players" CSV file
+players <- read.csv("data/players.csv") # Change path file if needed
+
+# Create a new column in the data for player names
+actions$player_name <- players$shortName[match(actions$player_id, players$wyId)]
+
+```
+
+# New code for extracting one team's sequences starts here:
+```{r}
+# Function to filter data for a specific team ID
+filter_data_for_team <- function(actions, target_team_id) {
+  game_ids_with_team <- unique(actions$game_id[actions$team_id == target_team_id])
+  
+  filtered_data <- actions[actions$game_id %in% game_ids_with_team, ]
+  
+  return(filtered_data)
+}
+
+desired_team_id <- 1625  # Replace with your desired team ID
+
+filtered_data <- filter_data_for_team(actions, desired_team_id)
+
+```
+
+# Function that will return all sequences for the given team_id
+
+```{r}
+# Function to extract all sequences containing a specific team_id
+extract_all_sequences <- function(data, target_team_id) {
+  sequences <- list()
+
+  count <- 0
+
+  target_in_sequence <- FALSE
+
+  for (i in seq_len(nrow(data))) {
+    if (i == 1 || data$team_id[i] != data$team_id[i - 1]) {
+      count <- count + 1
+
+      current_sequence <- data[i, , drop = FALSE]
+
+      if (data$team_id[i] == target_team_id) {
+        target_in_sequence <- TRUE
+      }
+    } else {
+      current_sequence <- rbind(current_sequence, data[i, , drop = FALSE])
+
+      if (data$team_id[i] == target_team_id) {
+        target_in_sequence <- TRUE
+      }
+    }
+
+    if (i == nrow(data) || data$team_id[i + 1] != data$team_id[i]) {
+      if (target_in_sequence || (nrow(current_sequence) == 1 && current_sequence$team_id == target_team_id)) {
+        if (!any(grepl("^corner_crossed|^corner_short|^freekick_crossed|^freekick_short|^throw_in", current_sequence$type_name)) && nrow(current_sequence) > 1) {
+          sequences[[count]] <- current_sequence
+        }
+      }
+
+      current_sequence <- NULL  
+      target_in_sequence <- FALSE 
+    }
+  }
+
+  return(sequences)
+}
+
+# Call the function and store the results
+result_all_sequences <- extract_all_sequences(filtered_data, target_team_id = desired_team_id)
+
+```
+
+
+# Filtering for the starting points of each sequence
+```{r}
+# Extract only the starting point of each sequence
+all_starting_points <- lapply(result_all_sequences, function(seq) seq[1, ])
+
+# Convert starting points to a data frame
+all_starting_points_df <- do.call(rbind, all_starting_points)
+
+```
+
+# Display all these on a pitch with the zones, and a histogram showing the count of points per zone
+```{r}
+
+all_starting_points_df$zone <- find_zone(all_starting_points_df$start_x, all_starting_points_df$start_y)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_point(data = all_starting_points_df, aes(x = start_x, y = start_y, color = zone), size = 2) +
+  labs(title = paste("Starting Points of Sequences")) +
+  scale_color_manual(values = c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")) +
+  theme_minimal()
+
+all_zone_counts <- table(factor(all_starting_points_df$zone, levels = names(custom_zones)))
+
+all_zone_counts_df <- data.frame(zone = names(all_zone_counts), count = as.numeric(all_zone_counts))
+
+all_zone_counts_df$color <- c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")[match(all_zone_counts_df$zone, names(custom_zones))]
+
+ggplot(all_zone_counts_df, aes(x = zone, y = count, fill = color)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_text(aes(label = count), vjust = -0.5, color = "black", size = 3) +
+  labs(title = "Number of Points in Each Zone (All Sequences)", x = "zone", y = "Count") +
+  scale_fill_identity() +  
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+# Now do the same but for sequences that contain a shot action
+
+```{r}
+# Function to extract all sequences containing a specific type and team_id
+extract_all_shots <- function(data, target_type = "shot", target_team_id) {
+  sequences <- list()
+  count <- 0
+  
+  target_in_sequence <- FALSE
+  
+  for (i in seq_len(nrow(data))) {
+    if (i == 1 || data$team_id[i] != data$team_id[i - 1]) {
+      count <- count + 1
+      
+      current_sequence <- data[i, , drop = FALSE]
+      
+      if (data$type_name[i] == target_type && data$team_id[i] == target_team_id) {
+        target_in_sequence <- TRUE
+      }
+    } else {
+      current_sequence <- rbind(current_sequence, data[i, , drop = FALSE])
+      
+      if (data$type_name[i] == target_type && data$team_id[i] == target_team_id) {
+        target_in_sequence <- TRUE
+      }
+    }
+    
+    if (i == nrow(data) || data$team_id[i + 1] != data$team_id[i]) {
+      if (target_in_sequence || (nrow(current_sequence) == 1 && current_sequence$type_name == target_type && current_sequence$team_id == target_team_id)) {
+        if (!any(grepl("^corner_crossed|^corner_short|^freekick_crossed|^freekick_short|^throw_in", current_sequence$type_name)) && nrow(current_sequence) > 1) {
+          sequences[[count]] <- current_sequence
+        }
+      }
+      
+      current_sequence <- NULL  
+      target_in_sequence <- FALSE 
+    }
+  }
+  
+  return(sequences)
+}
+
+target_types <- c("shot")
+result_all_shots <- list()
+
+for (target_type in target_types) {
+  result_all_shots <- c(result_all_shots, extract_all_shots(filtered_data, target_type = target_type, target_team_id = desired_team_id))
+}
+
+```
+
+# Then filter again for the starting points
+# Then plot all on a graph and display the count
+
+```{r}
+# Extract only the starting point of each sequence
+shot_starting_points <- lapply(result_all_shots, function(seq) seq[1, ])
+
+# Convert starting points to a data frame
+shot_starting_points_df <- do.call(rbind, shot_starting_points)
+
+```
+
+# Display all these on a pitch with the zones, and a histogram showing the count of points per zone
+```{r}
+
+shot_starting_points_df$zone <- find_zone(shot_starting_points_df$start_x, shot_starting_points_df$start_y)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_point(data = shot_starting_points_df, aes(x = start_x, y = start_y, color = zone), size = 2) +
+  labs(title = paste("Starting Points of Sequences Containing a shot by team",desired_team_id)) +
+  scale_color_manual(values = c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")) +
+  theme_minimal()
+
+shot_zone_counts <- table(factor(shot_starting_points_df$zone, levels = names(custom_zones)))
+
+shot_zone_counts_df <- data.frame(zone = names(shot_zone_counts), count = as.numeric(shot_zone_counts))
+
+shot_zone_counts_df$color <- c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")[match(shot_zone_counts_df$zone, names(custom_zones))]
+
+ggplot(shot_zone_counts_df, aes(x = zone, y = count, fill = color)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_text(aes(label = count), vjust = -0.5, color = "black", size = 3) +
+  labs(title = "Number of Points in Each Zone (Sequences Containing a Shot)", x = "zone", y = "Count") +
+  scale_fill_identity() + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+# Now I want to display 
+# 1. Graph with all sequences on the pitch
+# 2. Graph with all shot sequences
+# 3. Graph that gives the boxes with each box labelled with the ratio of sequences to shots
+
+```{r}
+# 1.
+all_starting_points_df$zone <- find_zone(all_starting_points_df$start_x, all_starting_points_df$start_y)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_point(data = all_starting_points_df, aes(x = start_x, y = start_y, color = zone), size = 2) +
+  labs(title = paste("Starting Points of Sequences By Team",desired_team_id)) +
+  scale_color_manual(values = c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")) +
+  theme_minimal()
+
+# 2.
+shot_starting_points_df$zone <- find_zone(shot_starting_points_df$start_x, shot_starting_points_df$start_y)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_point(data = shot_starting_points_df, aes(x = start_x, y = start_y, color = zone), size = 2) +
+  labs(title = paste("Starting Points of Sequences Containing a Shot By Team",desired_team_id)) +
+  scale_color_manual(values = c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")) +
+  theme_minimal()
+
+# 3.
+shot_percentage <- shot_zone_counts_df$count / all_zone_counts_df$count * 100
+
+custom_zones_df$percentage <- round(shot_percentage, 2)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_text(data = custom_zones_df, aes(x = x, y = y, label = paste0(percentage, "%")), size = 4, color = "black") +
+  labs(title = "Percentage of Sequences That Result in a Shot Per Zone") +
+  theme_minimal()
+```
+# Now filter for goals - aka successful shots
+
+```{r}
+goal_sequences <- function(sequences) {
+  filtered_sequences <- list()
+  
+  for (i in seq_along(sequences)) {
+    # Check if the sequence contains the specified target_type with result_id "1" (indicating success)
+    # and exclude sequences with type_name starting with specified values
+    if (any(sequences[[i]]$result_id == "1" & 
+            sequences[[i]]$type_name %in% c("shot")) &&
+        !any(grepl("^corner_crossed|^corner_short|^freekick_crossed|^freekick_short|^throw_in", sequences[[i]]$type_name))) {
+      filtered_sequences <- c(filtered_sequences, list(sequences[[i]]))
+    }
+  }
+  
+  return(filtered_sequences)
+}
+
+goal_zones <- goal_sequences(result_all_shots)
+
+```
+
+
+```{r}
+# Extract only the starting point of each sequence in goal sequences
+goal_starting_points <- lapply(goal_zones, function(seq) seq[1, ])
+
+goal_starting_points_df <- do.call(rbind, goal_starting_points)
+
+goal_starting_points_df$zone <- find_zone(goal_starting_points_df$start_x, goal_starting_points_df$start_y)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_point(data = goal_starting_points_df, aes(x = start_x, y = start_y, color = zone), size = 2) +
+  labs(title = paste("Starting Points of Sequences Resulting in a Goal by team",desired_team_id)) +
+  scale_color_manual(values = c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")) +
+  theme_minimal()
+
+goal_zone_counts <- table(factor(goal_starting_points_df$zone, levels = names(custom_zones)))
+
+goal_zone_counts_df <- data.frame(zone = names(goal_zone_counts), count = as.numeric(goal_zone_counts))
+
+goal_zone_counts_df$color <- c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")[match(goal_zone_counts_df$zone, names(custom_zones))]
+
+ggplot(goal_zone_counts_df, aes(x = zone, y = count, fill = color)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_text(aes(label = count), vjust = -0.5, color = "black", size = 3) +
+  labs(title = "Number of Points in Each Zone (Sequences Ending in a goal)", x = "zone", y = "Count") +
+  scale_fill_identity() +  
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+```
+```{r}
+# 1.
+shot_starting_points_df$zone <- find_zone(shot_starting_points_df$start_x, shot_starting_points_df$start_y)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_point(data = shot_starting_points_df, aes(x = start_x, y = start_y, color = zone), size = 2) +
+  labs(title = paste("Starting Points of Sequences Containing a Shot By Team",desired_team_id)) +
+  scale_color_manual(values = c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")) +
+  theme_minimal()
+
+# 2.
+goal_starting_points_df$zone <- find_zone(goal_starting_points_df$start_x, goal_starting_points_df$start_y)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_point(data = goal_starting_points_df, aes(x = start_x, y = start_y, color = zone), size = 2) +
+  labs(title = paste("Starting Points of Sequences Resulting in a Goal By Team",desired_team_id)) +
+  scale_color_manual(values = c("red", "blue", "green", "cyan", "yellow", "black", "salmon", "hotpink","beige")) +
+  theme_minimal()
+
+# 3.
+# Need to find the % of shots to sequence
+# Calculate the percentage of sequences containing a shot action for each zone
+shot_percentage <- goal_zone_counts_df$count / shot_zone_counts_df$count * 100
+
+custom_zones_df$percentage <- round(shot_percentage, 2)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_text(data = custom_zones_df, aes(x = x, y = y, label = paste0(percentage, "%")), size = 4, color = "black") +
+  labs(title = "Percentage of Shot Sequences That Result in a Goal Per Zone") +
+  theme_minimal()
+
+# 4.
+# Need to find the % of goals to sequences
+goal_percentage <- goal_zone_counts_df$count / all_zone_counts_df$count * 100
+
+custom_zones_df$percentage <- round(goal_percentage, 2)
+
+ggplot() +
+  annotate_pitch(dimensions = pitch_custom) +
+  theme_pitch() +
+  geom_rect(data = custom_zones_df, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), fill = NA, color = "black") +
+  geom_text(data = custom_zones_df, aes(x = x, y = y, label = paste0(percentage, "%")), size = 4, color = "black") +
+  labs(title = "Percentage of Sequences That Result in a Goal Per Zone") +
+  theme_minimal()
+```
