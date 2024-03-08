@@ -15,6 +15,8 @@ library(ggsoccer)
 
 ```
 
+# This code allows one to create a new csv file containing the match data for any of the specified team_id's
+
 ```{r}
 # Read the "actions" CSV file
 actions <- read.csv("data/actions.csv")
